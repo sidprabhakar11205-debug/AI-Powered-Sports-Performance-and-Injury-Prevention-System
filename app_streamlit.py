@@ -1,0 +1,342 @@
+import streamlit as st
+import cv2
+import mediapipe as mp
+import tempfile
+import numpy as np
+mp_draw = mp.solutions.drawing_utils
+
+st.set_page_config(page_title="AI Fitness Coach", layout="centered")
+
+st.title("🏋️ AI Fitness Coach")
+st.markdown("### Analyze your exercise form & get instant feedback")
+
+st.divider()
+
+# -------------------------
+# UI INPUTS
+# -------------------------
+col1, col2 = st.columns(2)
+
+with col1:
+    exercise = st.selectbox(
+        "Select Exercise",
+        ["squat", "pushup", "lunge", "plank"]
+    )
+
+with col2:
+    input_type = st.radio(
+        "Input Type",
+        ["image", "video"]
+    )
+
+uploaded_file = st.file_uploader("📤 Upload Image or Video")
+
+st.divider()
+
+# -------------------------
+# HELPER FUNCTIONS
+# -------------------------
+mp_pose = mp.solutions.pose
+pose = mp_pose.Pose()
+
+def calculate_angle(a, b, c):
+    a = np.array(a)
+    b = np.array(b)
+    c = np.array(c)
+
+    ba = a - b
+    bc = c - b
+
+    cosine = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
+    cosine = np.clip(cosine, -1.0, 1.0)
+
+    angle = np.degrees(np.arccos(cosine))
+    return angle
+
+def get_coords(results, frame):
+    h, w, _ = frame.shape
+    coords = {}
+
+    for i, lm in enumerate(results.pose_landmarks.landmark):
+        coords[i] = (int(lm.x * w), int(lm.y * h))
+
+    return coords
+def ai_coach(exercise, result):
+
+    advice = ""
+
+    if exercise == "squat":
+
+        if "Shallow" in result:
+            advice = "Try lowering your hips further until your thighs are parallel to the ground."
+
+        elif "Too deep" in result:
+            advice = "Avoid going too low to reduce stress on your knees."
+
+        elif "Good" in result:
+            advice = "Great form! Maintain this posture and control your movement."
+
+        else:
+            advice = "Ensure your knees track your toes and keep your back neutral."
+
+    elif exercise == "pushup":
+
+        if "Incomplete" in result:
+            advice = "Lower your chest closer to the ground for full range of motion."
+
+        elif "Too low" in result:
+            advice = "Avoid excessive depth to protect your shoulders."
+
+        elif "Good" in result:
+            advice = "Excellent push-up form! Keep your core tight."
+
+        else:
+            advice = "Keep your elbows at about 45° to your body."
+
+    elif exercise == "lunge":
+
+        if "Shallow" in result:
+            advice = "Bend your front knee more to reach proper depth."
+
+        elif "Too deep" in result:
+            advice = "Avoid excessive depth to reduce knee strain."
+
+        elif "Good" in result:
+            advice = "Good balance and posture. Keep your torso upright."
+
+        else:
+            advice = "Ensure your front knee does not go too far forward."
+
+    elif exercise == "plank":
+
+        if "Sagging" in result:
+            advice = "Engage your core and avoid dropping your hips."
+
+        elif "too high" in result.lower():
+            advice = "Lower your hips slightly to form a straight line."
+
+        elif "Good" in result:
+            advice = "Excellent plank! Maintain a straight body alignment."
+
+        else:
+            advice = "Keep your body in a straight line from head to heels."
+
+    return advice
+# -------------------------
+# ANALYSIS LOGIC
+# -------------------------
+def analyze_image(path):
+    image = cv2.imread(path)
+    if image is None:
+        return "Error: Could not read image file", None
+    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    results = pose.process(rgb)
+
+    if not results.pose_landmarks:
+        return "No pose detected", None
+
+    # DRAW SKELETON
+    mp_draw.draw_landmarks(
+        image,
+        results.pose_landmarks,
+        mp_pose.POSE_CONNECTIONS
+    )
+
+    coords = get_coords(results, image)
+
+    knee = calculate_angle(coords[23], coords[25], coords[27])
+    hip = calculate_angle(coords[11], coords[23], coords[25])
+    elbow = calculate_angle(coords[11], coords[13], coords[15])
+
+    if exercise == "squat":
+        if knee > 160:
+            return "Not a squat", image
+        elif knee > 120:
+            return "Shallow squat – go deeper", image
+        elif knee >= 70:
+            return "Good squat posture", image
+        else:
+            return "Too deep squat – possible knee stress", image
+    
+    elif exercise == "pushup":
+        if elbow > 160:
+            return "Not a push-up position", image
+        elif elbow > 100:
+            return "Incomplete push-up – go lower", image
+        elif elbow >= 60:
+            return "Good push-up form", image
+        else:
+            return "Too low – possible shoulder strain", image
+    
+    elif exercise == "lunge":
+        if knee > 160:
+            return "Not a lunge", image
+        elif knee > 120:
+            return "Shallow lunge", image
+        elif knee >= 80:
+            return "Good lunge posture", image
+        else:
+            return "Too deep lunge – knee stress", image
+    
+    elif exercise == "plank":
+        plank_angle = calculate_angle(coords[11], coords[23], coords[27])
+        if plank_angle < 160:
+            return "Sagging hips", image
+        elif plank_angle > 200:
+            return "Hips too high", image
+        else:
+            return "Good plank posture", image
+    
+    else:
+        return "Exercise not supported", image
+
+
+def analyze_video(path):
+
+    cap = cv2.VideoCapture(path)
+
+    knee_list = []
+    hip_list = []
+    elbow_list = []
+    plank_list = []
+
+    last_frame = None
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = pose.process(rgb)
+
+        if results.pose_landmarks:
+
+            mp_draw.draw_landmarks(
+                frame,
+                results.pose_landmarks,
+                mp_pose.POSE_CONNECTIONS
+            )
+
+            coords = get_coords(results, frame)
+
+            # angles
+            knee = calculate_angle(coords[23], coords[25], coords[27])
+            hip = calculate_angle(coords[11], coords[23], coords[25])
+            elbow = calculate_angle(coords[11], coords[13], coords[15])
+            plank_angle = calculate_angle(coords[11], coords[23], coords[27])
+
+            knee_list.append(knee)
+            hip_list.append(hip)
+            elbow_list.append(elbow)
+            plank_list.append(plank_angle)
+
+            last_frame = frame
+
+    cap.release()
+
+    if not knee_list:
+        return "No pose detected in video", None
+
+    # AVERAGES
+    avg_knee = sum(knee_list) / len(knee_list)
+    avg_hip = sum(hip_list) / len(hip_list)
+    avg_elbow = sum(elbow_list) / len(elbow_list)
+    avg_plank = sum(plank_list) / len(plank_list)
+
+    # -------------------------
+    # SAME RULES AS IMAGE
+    # -------------------------
+
+    if exercise == "squat":
+
+        if avg_knee > 160:
+            return "Not a squat", last_frame
+        elif avg_knee > 120:
+            return "Shallow squat – go deeper", last_frame
+        elif avg_knee >= 70:
+            return "Good squat posture", last_frame
+        else:
+            return "Too deep squat – knee stress", last_frame
+
+
+    elif exercise == "pushup":
+
+        if avg_elbow > 160:
+            return "Not a push-up", last_frame
+        elif avg_elbow > 100:
+            return "Incomplete push-up – go lower", last_frame
+        elif avg_elbow >= 60:
+            return "Good push-up form", last_frame
+        else:
+            return "Too low – shoulder strain", last_frame
+
+
+    elif exercise == "lunge":
+
+        if avg_knee > 160:
+            return "Not a lunge", last_frame
+        elif avg_knee > 120:
+            return "Shallow lunge", last_frame
+        elif avg_knee >= 80:
+            return "Good lunge posture", last_frame
+        else:
+            return "Too deep – knee stress", last_frame
+
+
+    elif exercise == "plank":
+
+        if avg_plank < 160:
+            return "Sagging hips", last_frame
+        elif avg_plank > 200:
+            return "Hips too high", last_frame
+        else:
+            return "Good plank posture", last_frame
+
+
+    return "Exercise not supported", last_frame
+# -------------------------
+# MAIN BUTTON
+# -------------------------
+import os
+
+if st.button("Analyze"):
+    if uploaded_file is not None:
+
+        # ❗ File type validation
+        if input_type == "image" and uploaded_file.type.startswith("video"):
+            st.error("You selected IMAGE but uploaded a VIDEO")
+            st.stop()
+
+        if input_type == "video" and uploaded_file.type.startswith("image"):
+            st.error("You selected VIDEO but uploaded an IMAGE")
+            st.stop()
+
+        # Save file temp
+        file_ext = os.path.splitext(uploaded_file.name)[1]
+
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=file_ext)
+        temp_file.write(uploaded_file.read())
+        temp_file.close()
+
+    if input_type == "image":
+        result, output_img = analyze_image(temp_file.name)
+        st.success(result)
+    # ✅ AI COACH
+        advice = ai_coach(exercise, result)
+        st.info("💡 AI Coach Advice:")
+        st.write(advice)
+        if output_img is not None:
+            st.image(output_img, channels="BGR")
+    else:
+        result, frame = analyze_video(temp_file.name)
+        st.success(result)
+    # ✅ AI COACH
+        advice = ai_coach(exercise, result)
+        st.info("💡 AI Coach Advice:")
+        st.write(advice)
+        if frame is not None:
+            st.image(frame, channels="BGR")
+
+else:
+    st.warning("Please upload a file")
